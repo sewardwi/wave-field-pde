@@ -1,0 +1,174 @@
+{
+  "task": "SC09 unconditional audio generation (spoken digits, 16 kHz, 1.024 s clips)",
+  "sequence_length": 16384,
+  "tokens_per_clip": 1024,
+  "status": "COMPLETE, with two corrections baked in. QUALITY headline ('matched_bs64'): at matched budget the wave operator beats softmax on FSD (~16 vs ~26) — this stands. EFFICIENCY: the earlier '~4x faster/cheaper' was vs a naive-softmax strawman and is RETRACTED — see 'efficiency_vs_flashattention': against FlashAttention, wave is slower+heavier at 1024 tokens, wins on speed only beyond ~8k tokens, and never wins on memory. Also corrected: the 07-22 'operator upgrade' gains were training budget, not the operator. Earlier blocks kept for provenance.",
+  "rationale": "This is the only experiment in the project that probes a sequence length where wave-field's O(n log n) scaling has a real wall-clock advantage over O(n²) softmax. CIFAR at 64 tokens is too short for the asymptotic crossover (see benchmarks/attn_benchmark.png — wave field is ~7× faster than softmax at L=2048).",
+  "provenance": "2026-07-18 overnight run on an RTX 4090 24 GB, torch 2.4.1+cu124. First run with the AMP/no_grad self-conditioning gradient bug fixed (see wave_field/diffusion.py p_losses); the June 2026 numbers this table previously anticipated were produced under that bug and are invalid.",
+  "caveats": [
+    "FAST preset: batch 256 / lr 4e-4 at 100 epochs = ~4× fewer optimizer steps than the June bs-64 runs — absolute FSDs are not comparable across nights, only across runs within this table.",
+    "Wave runs used the BASE wave operator only — the dynamic-filter / hyena-gating upgrades that flipped the CIFAR result were NOT enabled (--dynamic_filter/--gating were left at defaults).",
+    "Runs B and D hit CUDA OOM inside softmax attention: at batch 256 and L=1024 the attention matrix is ~4 GB per layer. D died in epoch 1 (no results); B survived training (its in-training eval numbers are reported, 1k samples vs 10k for A/C) but crashed before the final eval and checkpoint push."
+  ],
+  "training": {
+    "epochs": 100,
+    "batch_size": 256,
+    "lr": 4e-4,
+    "preset": "FAST=1 (train_audio.py --fast)",
+    "schedule": "cosine",
+    "parameterization": "v",
+    "ddim_steps": 50,
+    "ema_decay": 0.9999,
+    "self_cond": true,
+    "patch_size": 16,
+    "dim": 128,
+    "depth": 6,
+    "num_heads": 4,
+    "timestep_dim": 128
+  },
+  "metric": {
+    "name": "Frechet SC09 Distance",
+    "feature_extractor": "SC09Classifier (metrics/classifier.py)",
+    "feature_extractor_weights": "metrics/weights/sc09_classifier.pt",
+    "feature_extractor_val_acc": 0.915,
+    "n_real": 2000,
+    "n_generated_during_training": 1000,
+    "n_generated_final": 10000,
+    "implementation": "metrics/evaluate.py + train_audio.py (in-training logging)"
+  },
+  "additional_readouts": [
+    "confident_accuracy: fraction of generated clips classified as a digit with confidence > 0.5",
+    "class_entropy: Shannon entropy of predicted-class histogram (uniform = log(10) ≈ 2.303 — catches mode collapse)",
+    "mel_distribution: side-by-side mean log-mel spectrogram, real vs generated vs difference"
+  ],
+  "runs": [
+    {
+      "id": "A",
+      "name": "wave + physics",
+      "attention": "wave (1D FFT, base operator)",
+      "conditioning": "physics",
+      "fsd": 43.609,
+      "confident_accuracy": 0.589,
+      "class_entropy": 0.833,
+      "class_counts": [0, 0, 3730, 83, 0, 22, 5887, 278, 0, 0],
+      "eval": "final, 10k samples",
+      "checkpoint": "outputs/sc09_wave_physics/checkpoint_epoch0100_ema.pt (EMA-only, committed)"
+    },
+    {
+      "id": "B",
+      "name": "standard + physics",
+      "attention": "softmax",
+      "conditioning": "physics",
+      "fsd": 29.976,
+      "confident_accuracy": 0.498,
+      "class_entropy": 1.534,
+      "class_counts": [0, 45, 26, 37, 5, 13, 344, 363, 20, 147],
+      "eval": "epoch-100 in-training eval, 1k samples (final 10k eval + checkpoint lost: OOM after training completed)",
+      "checkpoint": null
+    },
+    {
+      "id": "C",
+      "name": "wave + AdaLN",
+      "attention": "wave (1D FFT, base operator)",
+      "conditioning": "AdaLN-Zero",
+      "fsd": 66.520,
+      "confident_accuracy": 0.899,
+      "class_entropy": 0.725,
+      "class_counts": [0, 0, 6736, 46, 0, 0, 3039, 179, 0, 0],
+      "eval": "final, 10k samples",
+      "checkpoint": "outputs/sc09_wave_adaln/checkpoint_epoch0100_ema.pt (EMA-only, committed)"
+    },
+    {
+      "id": "D",
+      "name": "standard + AdaLN",
+      "attention": "softmax",
+      "conditioning": "AdaLN-Zero",
+      "fsd": null,
+      "confident_accuracy": null,
+      "class_entropy": null,
+      "class_counts": null,
+      "eval": "none — CUDA OOM in epoch 1 (softmax attention matrix at batch 256, L=1024)",
+      "checkpoint": null
+    }
+  ],
+  "findings": [
+    "softmax+physics decisively beats the base wave operator on audio at this budget (FSD 30.0 vs 43.6) and keeps far better class coverage (entropy 1.53 vs 0.83).",
+    "Both wave runs mode-collapse onto two digits ('two'/'six'); softmax does not. Collapse is therefore a property of the content-independent wave kernel, not the (now fixed) gradient bug — the same diagnosis that motivated the dynamic spectral filter on images.",
+    "The O(L²) memory wall is concrete: softmax OOM'd a 24 GB GPU at batch 256 / L=1024 while the wave runs fit easily — the memory half of the asymptotic argument, demonstrated in the target regime."
+  ],
+  "upgraded_operator_2x2": {
+    "date": "2026-07-22",
+    "provenance": "RTX 4090, torch 2.4.1+cu124, scripts/run_sc09_upgraded.sh. All runs: --attn wave --dynamic_filter --gating hyena, batch 64, 100 epochs, 10k-sample FSD. Conditional runs: --num_classes 10, CFG w=2.0.",
+    "question": "Does the CIFAR-winning wave-operator upgrade also fix audio quality + the mode collapse, and does class-conditioning help on top?",
+    "runs": [
+      {"name": "wave + physics (upgraded)",        "conditioning": "physics", "class_conditional": false, "fsd": 14.861, "confident_accuracy": 0.732, "class_entropy": 1.571},
+      {"name": "wave + AdaLN (upgraded)",          "conditioning": "adaln",   "class_conditional": false, "fsd": 19.049, "confident_accuracy": 0.565, "class_entropy": 1.915},
+      {"name": "wave + physics (upgraded, C+CFG)", "conditioning": "physics", "class_conditional": true,  "guidance_scale": 2.0, "fsd": 8.548, "confident_accuracy": 0.846, "class_entropy": 2.180},
+      {"name": "wave + AdaLN (upgraded, C+CFG)",   "conditioning": "adaln",   "class_conditional": true,  "guidance_scale": 2.0, "fsd": 8.033, "confident_accuracy": 0.822, "class_entropy": 2.220}
+    ],
+    "findings": [
+      "SUPERSEDED by the matched batch-64 run (see 'matched_bs64' below). These findings attributed the FSD drop and collapse fix to the operator upgrade, with a batch-256-vs-64 budget caveat. The matched run shows the caveat was the whole story: the improvement was training budget, not the operator.",
+      "Class-conditioning + CFG adds a further ~2x (to FSD ~8) and near-uniform class balance (entropy ~2.22). physics beats AdaLN only unconditionally (14.9 vs 19.0); with labels + CFG they converge, AdaLN marginally ahead (8.0 vs 8.5). This part still stands."
+    ]
+  },
+  "matched_bs64": {
+    "date": "2026-07-22",
+    "provenance": "RTX 4090, torch 2.4.1+cu124, scripts/run_sc09_matched.sh. All runs unconditional, batch 64, lr 1e-4, 100 epochs, 10k-sample FSD — matched to the upgraded-wave bs=64 runs so softmax / base-wave / upgraded-wave form one comparison with no budget confound.",
+    "question": "At matched budget and L=1024, does the wave operator beat softmax on audio quality, and how much of the 2026-07-18/22 gains were the operator vs training budget?",
+    "quality_fsd": {
+      "softmax + physics":       {"fsd": 25.377, "class_entropy": 1.190},
+      "softmax + adaln":         {"fsd": 27.426, "class_entropy": 0.976},
+      "wave(base) + physics":    {"fsd": 16.923, "class_entropy": 1.821},
+      "wave(base) + adaln":      {"fsd": 16.076, "class_entropy": 1.361},
+      "wave(dyn+hyena) + physics": {"fsd": 14.861, "class_entropy": 1.571, "note": "from upgraded_operator_2x2, same config"},
+      "wave(dyn+hyena) + adaln":   {"fsd": 19.049, "class_entropy": 1.915, "note": "from upgraded_operator_2x2, same config"}
+    },
+    "efficiency_benchmark_RETRACTED": {
+      "status": "RETRACTED — measured against naive materialized softmax (the O(L^2) strawman). Superseded by 'efficiency_vs_flashattention' below. The '3.9x faster / 4.2x less memory' claim does NOT hold against a real FlashAttention baseline.",
+      "old_numbers_naive_softmax": {"fwd_ms": 58.4, "step_ms": 159.8, "peak_mb": 14386}
+    },
+    "findings": [
+      "At matched budget the wave operator BEATS softmax on audio QUALITY: FSD ~16 (base wave) vs ~26 (softmax), with better class coverage. The earlier 'softmax wins on quality' was entirely the budget confound. THIS STANDS.",
+      "The dynamic-filter/hyena upgrade does NOT transfer from images to audio: at matched budget it helps physics slightly (16.9->14.9) but HURTS AdaLN (16.1->19.0). The 3-3.5x 'operator' gain claimed on 07-18/22 was training budget (bs64 vs bs256).",
+      "The mode-collapse fix was also budget, not the operator: base wave at bs64 already covers all 10 digits (entropy 1.36-1.82) vs 2 digits at bs256 (entropy 0.72-0.83).",
+      "EFFICIENCY CLAIM RETRACTED: the '4x cheaper' was vs naive softmax. See 'efficiency_vs_flashattention' — against FlashAttention, wave is slower AND heavier at 1024 tokens; the speed win only appears beyond ~8k tokens, and there is NO memory win at any length."
+    ]
+  },
+  "efficiency_vs_flashattention": {
+    "date": "2026-07-24",
+    "provenance": "RTX 4090, torch 2.4.1+cu124. scripts/benchmark_crossover.py (operator sweep) + scripts/benchmark_audio_models.py (full model). ALL softmax now uses F.scaled_dot_product_attention (FlashAttention/memory-efficient kernel), the correct modern baseline. Files: outputs/crossover/crossover.json, outputs/audio_bench/audio_bench.json.",
+    "why": "The earlier efficiency numbers compared wave against naive materialized softmax ((qk^T).softmax()@v), which builds the full L x L matrix. That is a strawman — nobody trains attention that way. Re-measured against FlashAttention the advantage largely disappears.",
+    "full_model_1024_tokens_bs64": {
+      "note": "Same benchmark as the retracted block, now with the fair SDPA softmax. Shows how much the strawman inflated softmax.",
+      "softmax_naive_strawman": {"step_ms": 159.8, "peak_mb": 14386},
+      "softmax_flashattention":  {"step_ms": 36.5,  "peak_mb": 2448},
+      "wave_base":               {"step_ms": 58.9,  "peak_mb": 3394},
+      "verdict": "At 1024 tokens FlashAttention is ~1.6x FASTER and ~1.4x LESS memory than wave. Strawman inflated softmax 4.4x (time) / 5.9x (memory)."
+    },
+    "operator_sweep_step_ms": {
+      "setup": "bs 8, dim 256, 8 heads, fwd+bwd; naive softmax OOMs past 4096",
+      "1024":  {"naive": 6.3,  "flash": 1.6,   "wave": 7.1},
+      "4096":  {"naive": 90.2, "flash": 4.2,   "wave": 6.4},
+      "8192":  {"naive": null, "flash": 15.0,  "wave": 9.3},
+      "16384": {"naive": null, "flash": 55.9,  "wave": 18.8},
+      "32768": {"naive": null, "flash": 215.2, "wave": 38.3},
+      "65536": {"naive": null, "flash": 881.7, "wave": 84.4}
+    },
+    "operator_sweep_peak_mb": {
+      "1024":  {"flash": 94,   "wave": 132},
+      "8192":  {"flash": 624,  "wave": 926},
+      "65536": {"flash": 4867, "wave": 7279}
+    },
+    "findings": [
+      "SPEED: wave overtakes FlashAttention at ~8192 tokens. Below that flash is faster (4.5x at 1k); above it wave's O(L log L) pulls away from flash's O(L^2), reaching ~10x faster at 65k tokens. Genuine, honestly measured.",
+      "MEMORY: FlashAttention wins at EVERY length; wave uses ~1.4-1.5x MORE memory (FFT materializes complex spectra; flash tiles and materializes nothing). No wave memory advantage exists against a real baseline.",
+      "SC09 at 1024 tokens is BELOW the crossover: wave there buys better quality at higher compute + memory cost, not lower. The efficiency payoff belongs to genuinely long-context tasks (>8k tokens)."
+    ]
+  },
+  "to_run_next": [
+    "Test a genuinely long-context task (>8k tokens) where wave is faster than FlashAttention — 1024-token SC09 is below the crossover",
+    "Reduce wave's memory constant (in-place/fp16 FFT, chunking) to turn the speed-only win into speed+memory",
+    "Benchmark against Mamba/S4 and Hyena, not just softmax — the real sub-quadratic baselines",
+    "Understand why the dynamic-filter/hyena upgrade helps images but regresses audio AdaLN"
+  ]
+}
