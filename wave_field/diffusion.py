@@ -54,9 +54,14 @@ class DDPMDiffusion:
         beta_end: float = 0.02,
         schedule: str = "cosine",
         parameterization: str = "v",
+        clamp_range: tuple | None = (-1.0, 1.0),
     ):
         self.T = num_timesteps
         self.parameterization = parameterization
+        # x_0 clamp range. Images live in [-1, 1] (the default). PDE fields are
+        # standardized to ~unit variance and have Gaussian-ish tails past ±1, so
+        # clamping would truncate the field — pass clamp_range=None for fields.
+        self.clamp_range = clamp_range
 
         if schedule == "cosine":
             # Nichol & Dhariwal 2021: alpha_bar_t = cos²((t/T + s)/(1+s) * π/2) / cos²(s/(1+s) * π/2)
@@ -268,7 +273,10 @@ class DDPMDiffusion:
         """Recover x_0 estimate from predicted noise."""
         c1 = self._extract(self.sqrt_recip_alpha_bar, t, x_t.shape)
         c2 = self._extract(self.sqrt_recipm1_alpha_bar, t, x_t.shape)
-        return (c1 * x_t - c2 * eps_pred).clamp(-1.0, 1.0)
+        x0 = c1 * x_t - c2 * eps_pred
+        if self.clamp_range is not None:
+            x0 = x0.clamp(*self.clamp_range)
+        return x0
 
     def _q_posterior(
         self, x_start: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor
@@ -457,4 +465,4 @@ class DDPMDiffusion:
             x = (sigma_n / sigma_t) * x - alpha_n * (torch.exp(-h) - 1.0) * D
             x0_prev, h_last = x0, h
 
-        return x.clamp(-1.0, 1.0)
+        return x.clamp(*self.clamp_range) if self.clamp_range is not None else x
