@@ -1,257 +1,238 @@
-# Wave Field PDE — Implementation Plan
+# Plan — Calibrated Probabilistic Renewable-Energy Forecasting (credibility artifact → industry → revenue)
 
-**Status:** this repo forked from `wave-field-diffusion` on 2026-07-24 and pivoted to
-scientific-field generation (PDE surrogates, fluid dynamics, weather/climate). This
-document replaces the old image/audio plan. See `docs/agent-memory/project_pde_pivot.md`
-for pivot rationale and hard-won lessons.
+**Pivot date:** 2026-08-02. This repo began as `wave-field-diffusion` (image/audio), forked to
+`wave-field-pde` (PDE surrogates), and now pivots again to a concrete, commercially-relevant
+target: **calibrated probabilistic day-ahead wind/solar power forecasting on 100% public data.**
 
-**This version reflects a deep design review (2026-07-24).** The spine was reordered:
-the *deterministic* wave-operator-vs-FNO comparison is the primary first result, and
-diffusion is deferred to the tasks where it is actually motivated. See "Why this order"
-below.
+## Why this, stated honestly
 
----
+The goal is **revenue**, but the operator is purely technical with no industry network — the hardest
+combination, because industrial ML is sold on trust/relationships, not model quality. So the plan is
+**not** "launch a solo product cold." It's to build **one genuinely excellent, public, rigorous
+artifact** that does quadruple duty:
+1. **Credibility / inbound** that substitutes for a network,
+2. **A portfolio piece** that lands a role at a funded player (Jua, Silurian, PhysicsX, an energy
+   desk) → the income, domain, and network we currently lack,
+3. **Real market learning** (do buyers care? what's the real bar?) without needing intros first,
+4. **The seed of a product** if interest shows up.
 
-## Thesis
+The honest ladder: **artifact → into the industry → network + domain + capital → found from strength.**
+Every rung has standalone value. The model is a commodity component (NVIDIA gives FourCastNet away free);
+the durable value is **calibrated uncertainty + rigor + economic framing + the last mile.**
 
-The wave-field operator is an FFT global convolution — a Fourier Neural Operator (FNO)
-cousin — so the "wave equation" framing becomes literal physics when the data is a
-physical field. Two distinct questions follow, and the review found they must **not** be
-conflated:
-
-- **Q1 (operator quality):** is the FFT damped-oscillator operator competitive with FNO as
-  a *deterministic* operator on a PDE benchmark? — Well-posed, cheap, honest. **Primary.**
-- **Q2 (diffusion payoff):** on a genuinely *stochastic* field task, does wave-**diffusion**
-  give calibrated ensembles, and does physics-timestep kernel conditioning beat AdaLN? —
-  The actual novelty, but only motivated where the target distribution is non-degenerate.
-
-**The #1 rule (from prior overclaims): sanity-check the baseline before believing a win.**
-Every number is reported against a real, matched, budget-matched baseline whose *published*
-result we have reproduced *on the exact data we use*. Sub-quadratic is table stakes here.
+**Non-negotiable ethos (carried from prior work): sanity-check the baseline before believing a win.**
+Here that means beating the grid operators' *own published forecast*, not a strawman.
 
 ---
 
-## Why this order (the review's central finding)
+## The artifact, precisely scoped
 
-The pivot memo named "2D NS with the diffusion backbone vs FNO" as the first experiment.
-The review flagged this as **mis-motivated**, and the plan now corrects it:
+**Task:** Day-ahead (and intraday) **probabilistic** forecasts of aggregate **wind and solar power**
+generation for a European **bidding zone**, on fully public data, evaluated against the incumbent
+operational forecast and translated into **money**.
 
-- The canonical FNO NS benchmark is **near-deterministic**: a specified initial condition
-  determines the solution, so `p(u|a)` is ~a delta. Diffusion can at best *tie* regression
-  (via its ensemble mean) and structurally tends to *lose* on pointwise relative L2
-  (sampling variance + ensemble-mean blurring of a nonlinear field). FNO reaches ~8e-3
-  rel-L2 on ν=1e-3 precisely because the map is nearly deterministic.
-- Diffusion earns its keep only under genuine aleatoric uncertainty: chaotic long-horizon
-  rollout, partial observation, stochastic forcing, or super-resolution/downscaling. That
-  is the *weather* regime (why DeepMind's GenCast is a diffusion model), not smooth NS.
+- **Probabilistic, not point:** predict full predictive distributions / quantiles, because calibrated
+  uncertainty is the actual product value (traders price risk; imbalance is a cost).
+- **Region/zone-level first** (aggregate generation per bidding zone), *not* plant-level — no proprietary
+  SCADA needed, and it's the quantity markets actually settle on.
+- **Europe-first (ENTSO-E)** for one decisive reason: ENTSO-E publishes each TSO's **own day-ahead
+  wind/solar forecast**, giving a *real operational baseline to beat* — the single most credible thing
+  we can benchmark against. (US via EIA-930 / ERCOT / CAISO is the fallback / expansion.)
 
-So: **Q1 (deterministic) is the honest, cheap Phase-1 headline.** Diffusion on easy-NS is
-run only as a *competence check* ("can it at least match regression?"). The diffusion +
-physics-conditioning contribution (Q2) lives on a deliberately stochastic task in Phase 3.
-
-**Also corrected:** the FNO NS task is *temporal* — predict vorticity `w(x, t>T₀)` from the
-initial segment `w(x, t≤T₀)` on a periodic torus — **not** the static `a(x)→u(x)` map the
-first draft described. Time is handled either as stacked channels (predict the whole future
-window at once) or autoregressively (GenCast-style, one step per diffusion sample); the
-deterministic Phase 1 uses the stacked-channel form for simplicity.
+**The fail-fast question that governs everything:** *Can a calibrated probabilistic model beat the
+TSO's own day-ahead forecast — on CRPS AND on economic (imbalance) cost — for a real bidding zone?*
+If a strong model can't, that's critical market intel (the incumbents are already good), learned in
+weeks not months.
 
 ---
 
-## What the code review verified (grounded facts, not assumptions)
+## What transfers vs. what gets parked
 
-- **The wave conv is *circular* (periodic).** `WaveFieldAttention2D` builds the kernel on
-  wrapped grids (`attention.py:444`) and does `rfft2/irfft2` with `s=(Gy,Gx)`, no padding
-  (`attention.py:522`). Its implicit boundary condition is therefore **periodic — an exact
-  match for the torus NS benchmark**, same BC as FNO. (Corollary: wrong BC for non-periodic
-  PDEs — Darcy/Dirichlet would need zero-padded linear conv. NS-periodic is the ideal first
-  match by construction.)
-- **The `[-1,1]` clamp is real but narrower than first stated.** DDPM `p_sample_step` clamps
-  x₀ every step (`diffusion.py:271`); DPM++ clamps only the final output (`diffusion.py:460`);
-  **DDIM does not clamp at all** (`diffusion.py:392`) → DDIM is already field-safe. Fix:
-  add `clamp_range: tuple | None` (default `[-1,1]` for images, `None` for fields) to
-  `_predict_xstart` and the DPM++ final clamp.
-- **The wave conv runs at the *patch-grid* resolution**, not full resolution: the kernel is
-  built on `Gy=ph, Gx=pw` (post-patchify). At `patch_size=4` on 64², the global conv acts at
-  **16×16** — 4× coarser than FNO's full-64² spectral conv. This is a silent capacity
-  handicap → the field denoiser must use `patch_size ∈ {1,2}`.
-- **Physics-timestep conditioning only exists under diffusion.** It modulates the kernel by
-  the *diffusion* `t_emb` (`attention.py:437`). A pure regressor has no noise level to
-  condition on → the headline conditioning hypothesis is **not testable in the deterministic
-  Phase 1** (see the physical-parameter variant below for what *is* testable there).
+**Reuse:** the diffusion machinery (`wave_field/diffusion.py` — DDPM/v-pred/EMA/samplers, for generating
+calibrated forecast *ensembles*), the metrics-module *pattern*, the RunPod/scripts pattern, and above all
+the experimental discipline (matched baselines, honest eval, decision gates).
+
+**Park (lineage, not deleted):** the wave/FFT operator (`wave_field/attention.py`), the NS generator and
+field metrics (Phase-0/1 PDE work). Move under `legacy/` or leave in place but out of the critical path.
+The wave/spectral operator only re-enters at the *stretch* stage (regional spatiotemporal fields), and
+only if it earns its place — we use the best tool for the job, not a pet architecture.
+
+**New:** energy data loaders, forecasting metrics (CRPS/pinball/reliability/economic), probabilistic
+forecast models + baselines, and a public writeup.
 
 ---
 
-## What transfers vs. what is new
+## Data plan (100% public — verify licensing before any commercial use)
 
-**Transfers directly (proven — do not rewrite):**
-- `wave_field/attention.py` — `WaveFieldAttention2D`, radial kernel `k(r)=exp(-αr)·cos(ωr+φ)`,
-  physics/adaln conditioning, dynamic spectral filter, hyena gating, anisotropic kernels.
-  This is the operator; it already operates on an H×W grid with **periodic** conv.
-- `wave_field/blocks.py` — `WaveFieldBlock`, timestep embedder, AdaLN modulation.
-- `wave_field/diffusion.py` — `DDPMDiffusion` (cosine, v-pred, min-SNR-γ=5, DDIM/DPM++/DDPM)
-  and `EMA`. Used only in the diffusion phases.
-- `denoisers/image.py` — the patchify → blocks → unpatchify structure is the field-denoiser
-  template. Fields are already `(B, C, H, W)`; C = physical/time channels, not RGB.
-- `scripts/` RunPod pattern (test_push / autopush / EMA-only ckpt / shutdown / preflight).
+**Targets (what we predict) — ENTSO-E Transparency Platform** (free account + API token; `entsoe-py`):
+- Actual aggregate generation per production type (Wind Onshore, Wind Offshore, Solar) per bidding zone.
+- **The TSO day-ahead generation forecast** (wind/solar) — our headline baseline to beat.
+- Day-ahead prices and **imbalance prices** per zone — for the economic metric.
+- Load (optional feature/context).
 
-**New code (small, scoped):**
-1. `datasets/navier_stokes.py` — load NS data, form temporal `(input_segment, future_segment)`
-   pairs `(C,H,W)`, **per-channel standardization with saved stats**.
-2. `baselines/fno.py` — clean FNO-2D (SpectralConv2d + pointwise). Reproduce a published
-   rel-L2 *on our data* before trusting anything.
-3. `models/field_operator.py` — wave backbone usable as a **plain regressor** `u=G_θ(a)`
-   (Phase 1) and as a **diffusion denoiser** with conditioning-field concat (Phase 2+).
-   `patch_size ∈ {1,2}`; positional embedding **off by default** (see equivariance note).
-4. `metrics/field.py` — relative L2 + radially-averaged energy-spectrum error (+ CRPS /
-   spread-skill for the stochastic phase).
-5. `train_field.py` — training loop cloned from `train_cifar.py` (AdamW/EMA/AMP/self-cond),
-   with a `--mode {regression,diffusion}` switch.
-6. `baselines/unet.py`, `baselines/dit.py` — see baseline-set note.
+**Weather features (inputs):**
+- **ERA5 reanalysis** (Copernicus CDS, free; `cdsapi`) — hourly, historical — for model *development/training*.
+- **Actual NWP forecasts** — NOAA **GFS** (AWS Open Data / NOMADS) and/or **ECMWF open data (IFS)** —
+  for **honest evaluation**: a real day-ahead forecast uses forecast weather, not reanalysis.
+- **HRRR** (NOAA, US, 3 km hourly, AWS Open Data) if/when we do the US expansion.
+- `Open-Meteo` free API as a quick-start convenience (note: free tier is non-commercial — fine for the
+  artifact, flag for any product).
 
----
+**The rigor detail that makes or breaks credibility (the train/serve gap):** training on ERA5 (perfect
+hindcast weather) then serving on GFS forecasts is leakage — the model never saw forecast error. So:
+develop on ERA5 to prove weather→power skill, but **report headline numbers using real NWP forecasts
+(GFS/ECMWF-open) as inputs**, and always compare to the TSO forecast on the same footing. Document this
+explicitly in the writeup — it's exactly the honesty that signals competence.
 
-## Fairness protocol (non-negotiable — from prior overclaims)
+**Physical modeling helpers:** `pvlib` (clear-sky / PV physics for solar features + a physics baseline);
+NREL NSRDB / WIND Toolkit for US expansion.
 
-1. **Matched params is necessary but NOT sufficient.** The wave op learns *3 scalars/head*
-   for a fixed parametric radial spectrum, L1-normalized so filter gain ≤ 1
-   (`attention.py:487`); FNO learns a *free dense complex map per retained mode*. They
-   allocate capacity completely differently — report the allocation, don't treat a param
-   match as a fair fight on its own.
-2. **Matched optimizer steps** — same epochs *and* batch size; never the FAST preset for any
-   compared number (it cuts steps 2–4×).
-3. **Reproduce the baseline's published number on the exact data we use.** If we use PDEBench
-   NS, reproduce FNO *on PDEBench* — do not cite the FNO-paper number on FNO-paper data.
-4. **Report rel-L2 AND spectrum error** — a model can win L2 by over-smoothing and lose the
-   high-frequency spectrum; the spectrum error catches it.
-5. Fixed seed, saved normalization stats, published train/val/test split.
-
-**Baseline set (revised):** FNO (must) + a **U-Net** (the diffusion-for-science workhorse)
-+ a **DiT/transformer** (a *quadratic* baseline — the only way any efficiency claim is
-meaningful; see below). **Mamba is optional and only fair with multi-directional scans** —
-a naive 1D raster-scan SSM on a non-causal 2D field is a strawman (rule #1).
+**First slice:** one wind-heavy zone (e.g. Denmark DK1 or a German zone) for wind, and one solar-heavy
+zone (e.g. Spain) for solar — enough signal, clean data, TSO forecast available.
 
 ---
 
-## Efficiency story — stated honestly
+## Metrics (what "good" means)
 
-- **Vs FNO there is NO asymptotic win:** both are O(n log n), and the wave op likely has
-  *higher* constants (fp32 FFT per channel under AMP, plus the kernel FFT). The ~8k-token
-  crossover from prior work was **vs quadratic attention**, not vs FNO.
-- **64² = 4096 tokens is below that crossover** → Phases 1–2 are **quality-only** probes;
-  no efficiency claim is admissible there.
-- Any efficiency claim requires (a) hi-res ≥128² (16k+ tokens) **and** (b) a transformer/DiT
-  baseline in the comparison. That is Phase 4, not the headline.
+- **CRPS** (continuous ranked probability score) — the standard probabilistic-forecast score. Primary.
+- **Pinball / quantile loss** at the quantiles a trader uses (e.g. P10/P50/P90).
+- **Calibration/reliability:** PIT histograms, reliability diagrams, coverage of nominal intervals,
+  and a scalar calibration error.
+- **Sharpness** (interval width) — calibrated *and* sharp, not just wide.
+- **Point-forecast sanity:** RMSE/MAE vs the TSO forecast (so we're comparable to how they self-report).
+- **THE money metric:** translate forecast error → **imbalance cost** using ENTSO-E day-ahead vs
+  imbalance prices (a simple market-settlement model). "€X/MW/year saved vs the TSO forecast" is the
+  sentence a buyer reacts to. This is the differentiator of the whole artifact.
 
----
-
-## Physics decisions (open questions made explicit)
-
-- **Forward (noising) process is an open question — decided in Phase 2.** The existing
-  `DDPMDiffusion` uses white Gaussian noise, which is spectrally flat and destroys a
-  turbulent power-law spectrum inefficiently. The thesis-aligned alternative is
-  **heat-dissipation / blurring diffusion** (Rissanen 2022; Hoogeboom & Salimans 2022):
-  the forward process *is* the heat equation and the reverse is literally wave-like
-  sharpening. Phase 2 evaluates Gaussian-DDPM first (reuses proven code) and decides whether
-  to invest in blurring diffusion based on whether generated spectra are correct. Flagged
-  first-class so Phases 0–1 are not blocked on it.
-- **Naming collision to keep straight in code and writing:** "timestep" means both the
-  *diffusion* noise level and the *physical* PDE time. The kernel conditions on the **former**.
-- **Physical-parameter conditioning (the more novel angle, and testable in Phase 1):** feed
-  viscosity ν / horizon through the same `t_emb` port so the kernel adapts to physical
-  *regime* rather than noise level. This is arguably a stronger contribution than the
-  image-inherited noise-level conditioning, and it works without diffusion.
-- **Metric caveat for the stochastic arm:** a single diffusion sample is not meant to match
-  ground truth pointwise; only the **ensemble mean** is comparable to FNO's rel-L2, and the
-  mean blurs — so it must be read alongside spectrum error + CRPS, never alone.
-- **Normalization determines whether the clamp is even a bug:** standardize (zero-mean/unit-
-  var) → must fix the clamp; min-max to [-1,1] → no code change but wastes dynamic range on
-  turbulent tails. **Recommendation: standardize + fix the clamp.**
-- **Equivariance:** the circular conv is translation-equivariant, a good prior for
-  homogeneous turbulence — but patchify + absolute positional embeddings break it (FNO keeps
-  it for free). Default the field denoiser to `patch_size ∈ {1,2}` and **no pos-embed**.
+Land these in `metrics/forecasting.py` with self-tests (perfect forecast → CRPS 0; calibrated noise →
+flat PIT), same discipline as the existing `metrics/field.py`.
 
 ---
 
-## Phases
+## Baselines (the rigor foundation — build these FIRST)
 
-### Phase 0 — Data + FNO baseline + metrics + plumbing (~1 wk)
-- [ ] Obtain NS data. **PDEBench NS-2D** (stable HDF5) preferred over the fragile original
-      FNO Google-drive `.mat` links; document exact source + split in the loader.
-- [ ] `datasets/navier_stokes.py`: temporal `(input_segment, future_segment)` pairs `(C,H,W)`,
-      per-channel standardization with saved stats, paper-matched split.
-- [ ] `baselines/fno.py`: clean FNO-2D. **Reproduce a published rel-L2 on our data first.**
-      If it can't hit the ballpark, stop — the baseline is wrong (rule #1).
-- [ ] `metrics/field.py`: rel-L2 + radially-averaged spectrum error, with unit checks
-      (identical→0, noise→~1).
-- [ ] Add `clamp_range` plumbing to `DDPMDiffusion` (only needed for the diffusion phases,
-      but land it now so it's not a Phase-2 surprise).
+1. **Persistence** (today→tomorrow; and "same hour yesterday").
+2. **Climatology / diurnal-seasonal** (calibrated marginal by hour/month).
+3. **TSO day-ahead forecast** (ENTSO-E) — *the* bar. Point forecast; we wrap it with an empirical error
+   distribution to make it probabilistic for a fair CRPS comparison.
+4. **Physical:** `pvlib` clear-sky → PV for solar; simple power-curve for wind (NWP wind speed → power).
+5. **Gradient-boosted quantile regression** (LightGBM/XGBoost, quantile objective) — the *industry
+   workhorse* ML baseline. If our fancy model can't beat well-tuned GBM quantile, we don't have a result.
 
-### Phase 1 — Wave operator vs FNO, deterministic (PRIMARY, ~1.5 wk)
-- [ ] `models/field_operator.py` as a plain regressor `u=G_θ(a)`: patchify (P∈{1,2}),
-      `WaveFieldBlock`s (`use_2d_kernel=True`), unpatchify; pos-embed off.
-- [ ] Train vs FNO at **matched params AND matched steps** (never FAST). Report rel-L2 +
-      spectrum error; log per-arch capacity allocation.
-- [ ] Physical-parameter conditioning experiment: feed ν/horizon through the `t_emb` port;
-      does regime-adaptive kernel modulation help vs a static kernel?
-- [ ] **Decision gate:** is the wave operator within striking distance of FNO? If it is far
-      worse as an operator, diffusion will not rescue it — diagnose before proceeding.
-
-### Phase 2 — Diffusion competence check + forward-process decision (~1.5 wk)
-- [ ] `models/field_operator.py` in diffusion mode: conditioning field `a` concatenated at
-      input (reuse self-cond channel-concat plumbing); diffuse `u`. `clamp_range=None`.
-- [ ] `train_field.py --mode diffusion`. **Competence question:** can conditional diffusion
-      match the Phase-1 regressor on easy-NS (ensemble mean rel-L2)? A tie is the expected
-      good outcome; a large loss signals a plumbing bug.
-- [ ] Physics-vs-AdaLN conditioning ablation (now testable) at matched params.
-- [ ] **Forward-process decision:** inspect generated energy spectra under Gaussian-DDPM;
-      decide whether to implement heat-dissipation/blurring diffusion.
-- [ ] Kernel diagnostics: do (α, ω) specialize across diffusion timesteps (broad/smooth at
-      high noise → sharp/oscillatory at low noise) as they did on images?
-
-### Phase 3 — Stochastic task where diffusion is actually motivated (~2 wk)
-- [ ] Choose a genuinely stochastic target (one of: turbulent long-horizon rollout with
-      IC-uncertainty blow-up; super-resolution/downscaling; partial-observation infilling).
-- [ ] Baselines: **diffusion U-Net** (calibration peer) + FNO (deterministic mean) +
-      probabilistic-FNO/deep-ensemble if time — otherwise the uncertainty claim is a strawman.
-- [ ] Report ensemble-mean rel-L2, **CRPS, spread-skill ratio, rank histogram**, spectrum.
-- [ ] This is where the wave-diffusion + physics-conditioning contribution stands or falls.
-
-### Phase 4 — Efficiency, analysis, honest write-up (~1 wk)
-- [ ] Hi-res ≥128²/256² (16k–65k tokens) **with a transformer/DiT baseline** — the only
-      regime and comparison where an efficiency crossover is meaningful. Vs FNO report
-      quality + constants only, explicitly *not* an asymptotic win.
-- [ ] Answer Q1 and Q2 plainly. Target: honest arXiv report / workshop paper, not "SOTA".
+Establishing that #3 and #5 are strong is the whole point — beating a strawman proves nothing.
 
 ---
 
-## Environment & commands (target surface)
+## Modeling stages
 
-```bash
-# Phase 0
-python -m baselines.fno --data data/ns_pdebench --epochs N        # reproduce the reference number
-python -m metrics.field --self-test
+**Stage A — Baselines + honest harness (the foundation).** All five baselines, the metrics, the
+economic model, the train/serve-honest evaluation, one zone. Deliver a table: everyone vs the TSO
+forecast on CRPS + imbalance cost.
 
-# Phase 1 (deterministic, PRIMARY)
-python train_field.py --mode regression --arch wave --patch_size 2 --save_dir outputs/ns_wave_reg
-python train_field.py --mode regression --arch fno                --save_dir outputs/ns_fno
+**Stage B — Strong probabilistic ML (the core result).**
+- Distributional/quantile neural net (multi-quantile head or a parametric/mixture density) on
+  NWP + calendar + recent-generation features.
+- **Conditional diffusion ensemble** (reuse `wave_field/diffusion.py`): condition on weather+context,
+  sample an *ensemble* of generation trajectories → a calibrated joint predictive distribution over the
+  24h horizon (captures temporal correlation, which quantile regression misses — this matters for the
+  economic metric). This is where the repo's machinery genuinely helps.
+- Gate: beat TSO forecast + GBM-quantile on CRPS *and* imbalance cost, with good calibration.
 
-# Phase 2 (diffusion competence + ablation)
-python train_field.py --mode diffusion --arch wave --conditioning physics --save_dir outputs/ns_wave_phys
-python train_field.py --mode diffusion --arch wave --conditioning adaln   --save_dir outputs/ns_wave_adaln
-python -m metrics.field outputs/ns_wave_phys --n_ensemble 16
+**Stage C — Differentiation stretch (only if A/B win).** Regional/spatiotemporal: forecast the *field*
+of generation across many zones / a spatial grid with a spatiotemporal generative model — the one place
+the parked **wave/FFT + diffusion** machinery is genuinely apt (spatial multiscale + calibrated
+ensembles = "GenCast-lite for renewables"). Optional downscaling angle. This is the "novel method"
+upside, not the credibility foundation.
+
+---
+
+## Repo / engineering structure
+
 ```
-
-New deps likely: `h5py`/`scipy` for data loading (add to `requirements.txt`).
+data/                     # gitignored — cached ENTSO-E / ERA5 / GFS pulls
+datasets/
+  entsoe.py               # generation actuals, TSO forecasts, prices, load
+  weather.py              # ERA5 (cdsapi) + GFS/ECMWF-open loaders; feature alignment
+  build_dataset.py        # join weather+generation → aligned (features, target) tables; CLI
+metrics/
+  forecasting.py          # CRPS, pinball, reliability/PIT, coverage, sharpness + self-tests
+  economic.py             # imbalance-cost settlement model → €/MW
+baselines/
+  persistence.py, climatology.py, tso_forecast.py, physical.py, gbm_quantile.py
+models/
+  quantile_net.py         # distributional / multi-quantile NN
+  diffusion_forecast.py   # conditional diffusion ensemble (reuses wave_field/diffusion.py)
+train_forecast.py         # unified trainer (arch/baseline switch), matched protocol
+evaluate.py               # one-command leaderboard: all models vs TSO on CRPS + € for a zone
+reports/                  # the public writeup + figures (the artifact)
+legacy/                   # parked PDE + wave-operator code (lineage)
+```
+Add deps: `entsoe-py`, `cdsapi`, `xarray`, `netCDF4`/`cfgrib`, `lightgbm`, `pvlib`, `pandas`, `scikit-learn`.
+Eventually rename the repo (e.g. `calibrated-energy-forecasting`); not urgent.
 
 ---
 
-## Timeline (aggressive — treat as ordering, not a contract)
+## Phased steps with decision gates
+
+### Phase 0 — Data spine + honest harness (~1 week)
+- [ ] ENTSO-E account + token; `datasets/entsoe.py` pulling actual gen, TSO day-ahead forecast, prices,
+      load for 1 wind zone + 1 solar zone, ~3 years history. Cache locally.
+- [ ] `datasets/weather.py`: ERA5 pull (cdsapi) for the zone's bounding box; align to hourly generation.
+- [ ] `datasets/build_dataset.py`: join → aligned feature/target tables with a clean **temporal**
+      train/val/test split (no shuffling across time; forecast-origin discipline).
+- [ ] `metrics/forecasting.py` + `metrics/economic.py` with self-tests.
+- [ ] **Gate:** can we reproduce the TSO forecast's error against actuals from raw ENTSO-E? If our
+      numbers don't line up with reality, the data pipeline is wrong — fix before modeling (rule #1).
+
+### Phase 1 — Baselines + the fail-fast (~1 week)
+- [ ] All five baselines; the leaderboard harness (`evaluate.py`).
+- [ ] **THE fail-fast gate:** GBM-quantile vs the TSO forecast on CRPS **and** imbalance cost, using
+      real NWP-forecast inputs (not ERA5) for headline numbers.
+      - Beats TSO → real signal; proceed to Stage B with confidence.
+      - Ties/loses → *important finding.* Diagnose (is it the weather input? the zone?); the incumbents
+        being hard to beat is itself market intel worth writing up honestly. Decide before scaling.
+
+### Phase 2 — Strong probabilistic model (~2 weeks)
+- [ ] Quantile NN + conditional diffusion ensemble; matched training protocol.
+- [ ] Full leaderboard: CRPS, pinball, calibration, sharpness, RMSE, **€ saved vs TSO** — per zone.
+- [ ] Ablate what matters (weather source, features, temporal-correlation modeling).
+- [ ] **Gate:** does the generative model's *joint/temporal* calibration buy real economic value over
+      GBM-quantile? If not, the simpler model is the honest headline.
+
+### Phase 3 — The artifact + go-to-market (parallel; ongoing)
+- [ ] Public repo (clean, reproducible, one-command eval) + a sharp writeup: method, the train/serve
+      honesty, the leaderboard, and **€/MW/year vs the TSO forecast**. This IS the credibility artifact.
+- [ ] Publish (arXiv/blog/GitHub) and use it as the outreach hook.
+- [ ] **Customer-discovery track (yours — the real bottleneck):** talk to 5–10 potential buyers (energy
+      traders, small utilities, wind/solar operators, forecasting desks). Is the pain real? What do they
+      pay now? What accuracy/calibration changes their decision? The artifact is the door-opener; the
+      conversations decide if there's a business. *No model substitutes for this.*
+
+### Phase 4 — Expand or productize (only if signal is real)
+- [ ] Second region / US (EIA-930/ERCOT + HRRR) to show generality.
+- [ ] Stage C spatiotemporal/regional generative model (the differentiation + method-paper upside).
+- [ ] If buyer interest appears: a minimal live API/dashboard for one design partner.
+
+---
+
+## Honest risks & kill criteria
+
+- **TSOs are already good.** Beating their operational forecast (esp. day-ahead wind) is genuinely hard.
+  If we can't beat it economically after Phase 2, the *product* thesis weakens — but a rigorous "here's
+  how close public-data models get, and where they don't" is still a strong artifact. Kill the *product*
+  ambition early if the economics don't clear; keep the *credibility* artifact regardless.
+- **Distribution, not tech, is the bottleneck.** The model can be great and still sell nothing. The
+  customer-discovery track is the real gate on "revenue"; treat it as first-class.
+- **Data licensing for commercial use.** ENTSO-E/ERA5/GFS are fine for a public artifact; a *product*
+  needs a licensing review (esp. Open-Meteo non-commercial tier). Flag, don't ignore.
+- **Don't force the wave operator.** It re-enters only at Stage C and only if it wins. Best tool for the job.
+
+## Timeline (aggressive; all-in)
 
 | Phase | Duration | Milestone |
 |---|---|---|
-| 0 — Data + FNO baseline + metrics + clamp | ~1 wk | Reproduced FNO rel-L2 on our data |
-| 1 — Wave operator vs FNO (deterministic) | ~1.5 wk | Well-posed head-to-head; go/no-go gate |
-| 2 — Diffusion competence + fwd-process | ~1.5 wk | physics-vs-adaln; Gaussian-vs-blurring decision |
-| 3 — Stochastic task (diffusion payoff) | ~2 wk | CRPS/spread-skill vs U-Net + FNO |
-| 4 — Efficiency + write-up | ~1 wk | Hi-res vs transformer; honest report |
-| **Total** | **~7 wk** | |
+| 0 — Data spine + metrics | ~1 wk | Reproduce TSO-forecast error from raw data; honest harness |
+| 1 — Baselines + fail-fast | ~1 wk | GBM-quantile vs TSO on CRPS + € — go/no-go |
+| 2 — Probabilistic model | ~2 wk | Diffusion/quantile beats TSO + GBM; calibrated; €-quantified |
+| 3 — Artifact + discovery | parallel | Public repo + writeup; 5–10 buyer conversations |
+| 4 — Expand / productize | open | 2nd region, Stage C, or a design-partner demo |
