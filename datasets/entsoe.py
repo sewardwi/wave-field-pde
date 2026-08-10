@@ -24,32 +24,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from datasets._cache import cache_path, read_cache, write_cache
+
 # ENTSO-E PSR (production-source) codes.
 PSR = {"solar": "B16", "wind_offshore": "B18", "wind_onshore": "B19"}
 
 CACHE = Path("data/entsoe")
-
-
-def _cache_path(zone: str, what: str, start: pd.Timestamp, end: pd.Timestamp) -> Path:
-    CACHE.mkdir(parents=True, exist_ok=True)
-    tag = f"{zone}_{what}_{start.date()}_{end.date()}"
-    return CACHE / f"{tag}.parquet"
-
-
-def _read_cache(p: Path):
-    if not p.exists():
-        return None
-    try:
-        return pd.read_parquet(p)
-    except Exception:
-        return pd.read_pickle(p.with_suffix(".pkl")) if p.with_suffix(".pkl").exists() else None
-
-
-def _write_cache(obj, p: Path) -> None:
-    try:
-        (obj.to_frame() if isinstance(obj, pd.Series) else obj).to_parquet(p)
-    except Exception:
-        obj.to_pickle(p.with_suffix(".pkl"))     # fallback if no parquet engine
 
 
 class ENTSOE:
@@ -69,13 +49,13 @@ class ENTSOE:
 
     def _cached(self, what, fn, zone, start, end):
         s, e = self._ts(start), self._ts(end)
-        p = _cache_path(zone, what, s, e)
-        hit = _read_cache(p)
+        p = cache_path(CACHE, zone, what, s, e)
+        hit = read_cache(p)
         if hit is not None:
             return hit.squeeze("columns") if hit.shape[1] == 1 else hit
         print(f"  ENTSO-E pull: {what} {zone} {s.date()}→{e.date()}", flush=True)
         obj = fn(zone, start=s, end=e)
-        _write_cache(obj, p)
+        write_cache(obj, p)
         return obj
 
     # ---- individual series -------------------------------------------------
