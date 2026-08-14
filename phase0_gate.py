@@ -122,7 +122,7 @@ def main() -> int:
     ap.add_argument("--out", default="reports/phase0_gate.json")
     args = ap.parse_args()
 
-    end = pd.Timestamp(args.end) if args.end else pd.Timestamp.utcnow().normalize() - pd.Timedelta(days=1)
+    end = pd.Timestamp(args.end) if args.end else pd.Timestamp.now(tz="UTC").normalize().tz_localize(None) - pd.Timedelta(days=1)
     start = end - pd.DateOffset(years=args.years)
     s, e = start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 

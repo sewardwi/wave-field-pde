@@ -62,11 +62,66 @@ def add_lags(series: pd.Series, lags_hours: list[int], min_lead: int = 24,
     return pd.DataFrame({f"{nm}_lag{h}h": series.shift(h) for h in lags_hours})
 
 
+def forecast_origin_features(y: pd.Series, gate_hour: int = 12) -> pd.DataFrame:
+    """
+    Autoregressive features that respect **forecast origin**, i.e. gate closure.
+
+    Why a plain `lag24h` is not safe. In a day-ahead market every hour of delivery
+    day D is bid before gate closure on D-1 (12:00 CET for EPEX/OMIE). So the whole
+    day shares one information cutoff. A fixed 24h lag silently violates that for
+    later hours: for target 23:00 on D, `y_lag24h` is 23:00 on D-1 — eleven hours
+    *after* the cutoff. That's future information, and it flatters exactly the
+    late-day hours where a real system is least certain.
+
+    The honest construction is features frozen at the cutoff and therefore constant
+    across the delivery day:
+      y_at_gate     — last observed generation before cutoff
+      y_mean24_gate — mean generation over the 24h ending at cutoff
+      y_std24_gate  — its variability (recent regime)
+      y_sameh_d2    — same hour of day D-2, the most recent *fully observed* day
+
+    `add_lags` remains for intraday work, where a short lag is legitimate.
+    """
+    y = y.sort_index()
+    full = pd.date_range(y.index.min().floor("D"), y.index.max().ceil("D"),
+                         freq="h", tz=y.index.tz)
+    ys = y.reindex(full)
+
+    roll_mean = ys.rolling("24h", min_periods=6).mean()
+    roll_std = ys.rolling("24h", min_periods=6).std()
+
+    days = pd.DatetimeIndex(sorted(set(y.index.floor("D"))))
+    cutoff = days - pd.Timedelta(days=1) + pd.Timedelta(hours=gate_hour)
+
+    def at_cutoff(series: pd.Series) -> np.ndarray:
+        # Last value at or strictly before the cutoff instant.
+        pos = series.index.searchsorted(cutoff, side="right") - 1
+        vals = series.to_numpy()
+        out = np.full(len(pos), np.nan)
+        ok = pos >= 0
+        out[ok] = vals[pos[ok]]
+        return out
+
+    daily = pd.DataFrame({
+        "y_at_gate": at_cutoff(ys),
+        "y_mean24_gate": at_cutoff(roll_mean),
+        "y_std24_gate": at_cutoff(roll_std),
+    }, index=days)
+
+    out = daily.reindex(y.index.floor("D"))
+    out.index = y.index
+    # Same hour two days back is always before the cutoff, for every hour of D.
+    out["y_sameh_d2"] = ys.shift(48).reindex(y.index).to_numpy()
+    return out
+
+
 def assemble(target: pd.Series, weather: pd.DataFrame,
              tso_forecast: pd.Series | None = None,
              prices: pd.DataFrame | None = None,
              gen_lags_hours: list[int] | None = None,
-             min_lead: int = 24) -> pd.DataFrame:
+             min_lead: int = 24,
+             origin_features: bool = False,
+             gate_hour: int = 12) -> pd.DataFrame:
     """
     Build the aligned modelling table. All inputs are hourly, tz-aware (UTC).
 
@@ -81,6 +136,8 @@ def assemble(target: pd.Series, weather: pd.DataFrame,
     """
     target = target.rename("y")
     parts = [target, weather, calendar_features(target.index)]
+    if origin_features:
+        parts.append(forecast_origin_features(target, gate_hour=gate_hour))
     if gen_lags_hours:
         parts.append(add_lags(target, gen_lags_hours, min_lead=min_lead, name="y"))
     if tso_forecast is not None:
@@ -155,6 +212,28 @@ def _self_test() -> None:
     common = df.index[100]
     assert abs(df.loc[common, "y_lag24h"] - gen.loc[common - pd.Timedelta("24h")]) < 1e-9
     print(f"assembled table: {df.shape[0]} rows, cols={list(df.columns)}")
+
+    # Forecast-origin features must not react to anything after gate closure.
+    # Spike one delivery day's post-cutoff hours and assert the features for that
+    # day are unchanged — while a naive lag24 *does* move (proving the test bites).
+    gate = 12
+    spike_day = pd.Timestamp("2021-06-10", tz="UTC")
+    cut = spike_day - pd.Timedelta(days=1) + pd.Timedelta(hours=gate)
+    poisoned = gen.copy()
+    poisoned[(poisoned.index > cut) & (poisoned.index < spike_day + pd.Timedelta(days=1))] += 1e4
+
+    base = forecast_origin_features(gen, gate_hour=gate)
+    after = forecast_origin_features(poisoned, gate_hour=gate)
+    day = slice(spike_day, spike_day + pd.Timedelta(hours=23))
+    assert np.allclose(base.loc[day].to_numpy(), after.loc[day].to_numpy(), equal_nan=True), \
+        "forecast-origin features leaked post-gate information"
+    naive = add_lags(gen, [24], min_lead=24, name="y")["y_lag24h"]
+    naive_p = add_lags(poisoned, [24], min_lead=24, name="y")["y_lag24h"]
+    n_moved = int((~np.isclose(naive.loc[day].to_numpy(), naive_p.loc[day].to_numpy(),
+                               equal_nan=True)).sum())
+    assert n_moved > 0, "control failed: naive lag24 should have leaked"
+    print(f"forecast-origin features: immune to a post-gate spike ✓  "
+          f"(naive lag24h leaked on {n_moved}/24 hours of that day)")
 
     # Temporal split is ordered and non-overlapping.
     sp = temporal_split(df)
