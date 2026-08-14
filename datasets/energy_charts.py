@@ -64,12 +64,27 @@ class NoContent(RuntimeError):
     """The API answered 200 with 'no content available' — series doesn't exist."""
 
 
-def _get(path: str, timeout: int = 120, retries: int = 4, **params) -> dict:
-    """GET with backoff. The API rate-limits (429) under the multi-year pulls the
-    Phase-0 gate does, so a bare request drops slices silently-ish."""
+def _get(path: str, timeout: int = 180, retries: int = 4, **params) -> dict:
+    """GET with backoff.
+
+    The API rate-limits (429) under the multi-year pulls the Phase-0 gate does,
+    so a bare request drops slices silently-ish. Network exceptions are retried
+    too, not just HTTP statuses — a ReadTimeout propagates straight out of
+    requests.get() and would otherwise kill a long job partway through (which is
+    exactly how the first DE wind run died).
+    """
     delay = 5.0
     for attempt in range(retries + 1):
-        r = requests.get(f"{BASE}/{path}", params=params, timeout=timeout)
+        try:
+            r = requests.get(f"{BASE}/{path}", params=params, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            if attempt >= retries:
+                raise
+            print(f"    {type(e).__name__} from {path}; retrying in {delay:.0f}s "
+                  f"({attempt + 1}/{retries})", flush=True)
+            time.sleep(delay)
+            delay *= 2
+            continue
         if r.status_code in (429, 502, 503, 504) and attempt < retries:
             wait = float(r.headers.get("Retry-After", delay))
             print(f"    {r.status_code} from {path}; retrying in {wait:.0f}s "

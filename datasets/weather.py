@@ -88,10 +88,24 @@ def _request(endpoint: str, params: dict, timeout: int = 300, retries: int = 4):
     than size-bound (27 points x 30 days took 84s, x 60 days took 89s), so a tight
     timeout kills a request that was about to succeed and then retries it from
     scratch. Open-Meteo also rate-limits multi-year, multi-point pulls.
+
+    Retries cover **network exceptions as well as HTTP status codes**. Only
+    handling statuses is not enough: a multi-year pull died partway through on a
+    bare ReadTimeout, which propagates out of requests.get() and never reaches a
+    status check, killing a job that was most of the way done.
     """
     delay = 5.0
     for attempt in range(retries + 1):
-        r = requests.get(_ENDPOINTS[endpoint], params=params, timeout=timeout)
+        try:
+            r = requests.get(_ENDPOINTS[endpoint], params=params, timeout=timeout)
+        except requests.exceptions.RequestException as e:
+            if attempt >= retries:
+                raise
+            print(f"    {type(e).__name__} from open-meteo; retrying in "
+                  f"{delay:.0f}s ({attempt + 1}/{retries})", flush=True)
+            time.sleep(delay)
+            delay *= 2
+            continue
         if r.status_code in (429, 502, 503, 504) and attempt < retries:
             wait = float(r.headers.get("Retry-After", delay))
             print(f"    {r.status_code} from open-meteo; retrying in {wait:.0f}s "

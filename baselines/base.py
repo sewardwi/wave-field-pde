@@ -109,6 +109,55 @@ class EmpiricalResidualWrapper:
         return _sort_and_clip(q, self.lo_, self.hi_)
 
 
+class ConformalRecalibrator(QuantileForecaster):
+    """Fix a model's *calibration* without touching its point forecast.
+
+    Independently-fitted quantile regressions are routinely under-dispersed out
+    of sample: on DE wind the GBM's nominal 80% interval covered only 69.9%, which
+    cost it the CRPS comparison against the TSO even though its median was more
+    accurate (RMSE 2141 vs 2204).
+
+    The fix is quantile recalibration (the distributional cousin of conformal
+    prediction, cf. Romano et al. 2019). On a held-out split we measure the
+    *empirical* coverage of each predicted level, then serve the level that
+    actually achieves the nominal one — if the model's "90th percentile" only
+    covers 82% of outcomes, we serve its 95th percentile instead.
+
+    Fitted strictly on validation data. Using test data here would be the exact
+    self-deception this project is built to avoid.
+    """
+
+    def __init__(self, base: QuantileForecaster, name: str | None = None):
+        self.base = base
+        self.name = name or f"{base.name}_cal"
+
+    def fit(self, train: pd.DataFrame) -> "ConformalRecalibrator":
+        raise RuntimeError("call fit_calibration(val_df) — the base model is "
+                           "already fitted on train")
+
+    def fit_calibration(self, val: pd.DataFrame,
+                        levels: np.ndarray = DEFAULT_LEVELS) -> "ConformalRecalibrator":
+        self.levels_ = np.asarray(levels, float)
+        q = self.base.predict_quantiles(val, self.levels_)
+        y = val["y"].to_numpy(dtype=float)
+        cov = (y[:, None] <= q).mean(axis=0)          # empirical coverage per level
+        # Coverage must increase with level for the inverse map to be well defined;
+        # sampling noise can violate it, so enforce monotonicity.
+        self.cov_ = np.maximum.accumulate(cov)
+        return self
+
+    def predict_quantiles(self, df: pd.DataFrame,
+                          levels: np.ndarray = DEFAULT_LEVELS) -> np.ndarray:
+        levels = np.asarray(levels, float)
+        # Which model level actually delivers each nominal level?
+        adj = np.interp(levels, self.cov_, self.levels_)
+        q = self.base.predict_quantiles(df, self.levels_)
+        out = np.empty((len(q), len(levels)))
+        for i in range(len(q)):
+            out[i] = np.interp(adj, self.levels_, q[i])
+        return np.sort(out, axis=1)
+
+
 class PointBaseline(QuantileForecaster):
     """A point forecast + the residual wrapper. Subclasses supply `point()`."""
 

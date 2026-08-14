@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from baselines.base import DEFAULT_LEVELS
+from baselines.base import DEFAULT_LEVELS, ConformalRecalibrator
 from baselines.climatology import Climatology
 from baselines.gbm_quantile import GBMQuantile
 from baselines.persistence import Persistence
@@ -109,6 +109,14 @@ def build_models(train: pd.DataFrame, val: pd.DataFrame, df: pd.DataFrame,
     gbm2 = GBMQuantile(features=feats + ["tso_forecast"], levels=levels)
     gbm2.fit(train, val=val)
     fitted["gbm_plus_tso"] = gbm2
+
+    # Recalibrated variants. The GBMs are under-dispersed out of sample, which
+    # costs them CRPS even where their median is more accurate than the TSO's.
+    # Calibration is fitted on val only.
+    for src in ("gbm_quantile", "gbm_plus_tso"):
+        print(f"  calibrating {src}…", flush=True)
+        fitted[f"{src}_cal"] = ConformalRecalibrator(
+            fitted[src], name=f"{src}_cal").fit_calibration(val, levels)
     return fitted
 
 
@@ -158,20 +166,22 @@ def main() -> int:
         r["crps_skill_vs_tso"] = float(1.0 - r["crps"] / ref)
 
     order = sorted(results, key=lambda k: results[k]["crps"])
-    hdr = (f"\n{'model':14s} {'CRPS':>8s} {'skill':>7s} {'RMSE':>8s} {'MAE':>8s} "
+    hdr = (f"\n{'model':18s} {'CRPS':>8s} {'skill':>7s} {'RMSE':>8s} {'MAE':>8s} "
            f"{'bias':>8s} {'cov80':>6s} {'sharp80':>8s} {'calib':>6s}")
     print(hdr); print("-" * len(hdr))
     for name in order:
         r = results[name]
         star = " ←TSO" if name == "tso" else ""
-        print(f"{name:14s} {r['crps']:8.1f} {r['crps_skill_vs_tso']:+6.1%} "
+        print(f"{name:18s} {r['crps']:8.1f} {r['crps_skill_vs_tso']:+6.1%} "
               f"{r['rmse']:8.1f} {r['mae']:8.1f} {r['bias']:+8.1f} "
               f"{r['coverage_80']:5.1%} {r['sharpness_80']:8.1f} "
               f"{r['calibration_error']:6.3f}{star}")
 
     best = order[0]
-    gbm_skill = results["gbm_quantile"]["crps_skill_vs_tso"]
-    plus_skill = results["gbm_plus_tso"]["crps_skill_vs_tso"]
+    gbm_skill = max(results["gbm_quantile"]["crps_skill_vs_tso"],
+                    results["gbm_quantile_cal"]["crps_skill_vs_tso"])
+    plus_skill = max(results["gbm_plus_tso"]["crps_skill_vs_tso"],
+                     results["gbm_plus_tso_cal"]["crps_skill_vs_tso"])
     print(f"\nmean generation on scored rows: {y.mean():.0f} MW")
     print(f"CRPS is in MW; 'skill' is 1 - CRPS/CRPS_tso (positive = better than the TSO).")
     print(f"coverage_80 should be ≈80%; calib is RMS deviation of coverage from nominal.")

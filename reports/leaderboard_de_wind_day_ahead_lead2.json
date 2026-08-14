@@ -1,0 +1,141 @@
+{
+  "slice": "de_wind",
+  "label": "DE wind",
+  "source": "day_ahead",
+  "lead_days": 2,
+  "daylight_only": false,
+  "window": {
+    "start": "2024-03-02 23:00:00+00:00",
+    "end": "2026-08-08 21:00:00+00:00"
+  },
+  "n_train": 14935,
+  "n_val": 3200,
+  "n_test_scored": 3200,
+  "mean_generation_mw": 11960.9004375,
+  "levels": [
+    0.01,
+    0.05,
+    0.1,
+    0.2,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.7,
+    0.8,
+    0.9,
+    0.95,
+    0.99
+  ],
+  "economic_note": "imbalance_cost_proxy uses a proxy spread, not published imbalance prices \u2014 indicative only",
+  "results": {
+    "persistence": {
+      "crps": 4788.2916903059295,
+      "pinball": 1994.5625241959735,
+      "rmse": 8825.110835904758,
+      "mae": 6963.173230468749,
+      "bias": -629.02137109375,
+      "coverage_80": 0.811875,
+      "sharpness_80": 23634.1005640625,
+      "calibration_error": 0.03611338647499438,
+      "imbalance_cost_proxy": 636213606.4049813,
+      "crps_skill_vs_tso": -3.8252569007294657
+    },
+    "climatology": {
+      "crps": 4728.740512140102,
+      "pinball": 1978.0320605304687,
+      "rmse": 8812.53030523648,
+      "mae": 6816.245628906251,
+      "bias": -1901.42044921875,
+      "coverage_80": 0.741875,
+      "sharpness_80": 19228.411810156253,
+      "calibration_error": 0.02721898044811038,
+      "imbalance_cost_proxy": 606948195.2607563,
+      "crps_skill_vs_tso": -3.7652459924606605
+    },
+    "physical": {
+      "crps": 1945.2244197823838,
+      "pinball": 821.1882832750568,
+      "rmse": 3963.256415616047,
+      "mae": 2727.367707022474,
+      "bias": -1076.8054200096824,
+      "coverage_80": 0.7696875,
+      "sharpness_80": 7733.647741302787,
+      "calibration_error": 0.0728939067043013,
+      "imbalance_cost_proxy": 246779406.03954872,
+      "crps_skill_vs_tso": -0.9602413892255428
+    },
+    "tso": {
+      "crps": 992.339224380375,
+      "pinball": 423.48823701454324,
+      "rmse": 2203.8226301699106,
+      "mae": 1363.5742109374999,
+      "bias": 3.5619999999999616,
+      "coverage_80": 0.7678125,
+      "sharpness_80": 3857.6583773437505,
+      "calibration_error": 0.015612013834273214,
+      "imbalance_cost_proxy": 124405840.49513437,
+      "crps_skill_vs_tso": 0.0
+    },
+    "tso_debias": {
+      "crps": 992.4065743229544,
+      "pinball": 423.4343465557173,
+      "rmse": 2200.8576675863223,
+      "mae": 1363.6015791645143,
+      "bias": 2.8893836136735174,
+      "coverage_80": 0.765625,
+      "sharpness_80": 3860.849805455147,
+      "calibration_error": 0.015488102210928034,
+      "imbalance_cost_proxy": 124497344.85677135,
+      "crps_skill_vs_tso": -6.786987848994563e-05
+    },
+    "gbm_quantile": {
+      "crps": 1918.8620725580652,
+      "pinball": 822.120688592702,
+      "rmse": 3667.0025170144927,
+      "mae": 2624.445064477918,
+      "bias": -1449.3570069738112,
+      "coverage_80": 0.75875,
+      "sharpness_80": 8692.511548997762,
+      "calibration_error": 0.0949355724724567,
+      "imbalance_cost_proxy": 238631053.59750476,
+      "crps_skill_vs_tso": -0.9336755268907353
+    },
+    "gbm_plus_tso": {
+      "crps": 1025.9247716811349,
+      "pinball": 444.9408335418437,
+      "rmse": 2140.7936756180775,
+      "mae": 1377.8925083212794,
+      "bias": -240.19872893049615,
+      "coverage_80": 0.69875,
+      "sharpness_80": 3620.2539324326553,
+      "calibration_error": 0.0525459105577794,
+      "imbalance_cost_proxy": 124471509.95829348,
+      "crps_skill_vs_tso": -0.03384482491028318
+    },
+    "gbm_quantile_cal": {
+      "crps": 2276.9871569877346,
+      "pinball": 987.4203797175886,
+      "rmse": 3441.6035512497588,
+      "mae": 2553.1527692269465,
+      "bias": 418.6981549726108,
+      "coverage_80": 0.8628125,
+      "sharpness_80": 18323.27295617691,
+      "calibration_error": 0.08494651527126212,
+      "imbalance_cost_proxy": 241736937.4038695,
+      "crps_skill_vs_tso": -1.2945653069488459
+    },
+    "gbm_plus_tso_cal": {
+      "crps": 1144.6278106703003,
+      "pinball": 514.4544342933863,
+      "rmse": 2123.413246513889,
+      "mae": 1363.8461445349894,
+      "bias": -127.82470014419916,
+      "coverage_80": 0.8559375,
+      "sharpness_80": 10184.257965272438,
+      "calibration_error": 0.04357382109266278,
+      "imbalance_cost_proxy": 123687830.41370606,
+      "crps_skill_vs_tso": -0.1534642414089955
+    }
+  }
+}
