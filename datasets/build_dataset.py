@@ -172,6 +172,34 @@ def temporal_split(df: pd.DataFrame, val_frac: float = 0.15, test_frac: float = 
     }
 
 
+def blocked_val_split(df: pd.DataFrame, val_frac: float = 0.15,
+                      test_frac: float = 0.15, seed: int = 0) -> dict[str, pd.DataFrame]:
+    """Split with a *seasonally representative* validation set.
+
+    `temporal_split` puts val in one contiguous block between train and test.
+    That is the right shape for measuring generalisation, but it makes val a poor
+    **calibration** set on a short history: on DE wind the val block landed on a
+    high-wind winter (mean 20 GW) while test was a calm summer (12 GW), so a
+    coverage curve fitted there over-widened the intervals and made CRPS worse.
+    (Point-forecast early stopping barely noticed — calibration is much more
+    sensitive to distribution shift than a conditional median is.)
+
+    Here **test is still strictly the final contiguous period** — the guarantee
+    that actually matters, since nothing from the test window informs fitting or
+    calibration. Only train/val are interleaved, by whole **days** so no day is
+    split across the two, and val is drawn across all seasons.
+    """
+    assert df.index.is_monotonic_increasing, "index must be time-sorted"
+    n_test = int(round(test_frac * len(df)))
+    head, test = df.iloc[:len(df) - n_test], df.iloc[len(df) - n_test:]
+
+    days = pd.DatetimeIndex(sorted(set(head.index.floor("D"))))
+    n_val_days = max(1, int(round(val_frac / (1 - test_frac) * len(days))))
+    val_days = set(np.random.default_rng(seed).choice(days, size=n_val_days, replace=False))
+    is_val = head.index.floor("D").isin(val_days)
+    return {"train": head[~is_val], "val": head[is_val], "test": test}
+
+
 def xy(df: pd.DataFrame, target_col: str = "y",
        drop: tuple[str, ...] = ("tso_forecast",)) -> tuple[pd.DataFrame, pd.Series]:
     """Split a table into feature matrix X and target y (excluding price/baseline cols)."""

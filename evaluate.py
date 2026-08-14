@@ -130,6 +130,9 @@ def main() -> int:
     ap.add_argument("--lead-days", type=int, default=2,
                     help="NWP forecast lead: 2 = no leakage (headline), "
                          "1 = optimistic upper bound (leaks for late hours)")
+    ap.add_argument("--val-split", default="blocked", choices=["blocked", "temporal"],
+                    help="'blocked' gives a seasonally representative val set for "
+                         "calibration; test stays strictly the final period either way")
     ap.add_argument("--all-hours", action="store_true",
                     help="score solar over night hours too (default: daylight only)")
     ap.add_argument("--out", default=None)
@@ -138,7 +141,8 @@ def main() -> int:
     levels = DEFAULT_LEVELS
     df = sl.build(args.slice, args.start, args.end, source=args.source,
                   lead_days=args.lead_days)
-    split = bd.temporal_split(df)
+    split = (bd.blocked_val_split(df) if args.val_split == "blocked"
+             else bd.temporal_split(df))
     train, val, test = split["train"], split["val"], split["test"]
 
     daylight_only = df.attrs["solar"] and not args.all_hours
@@ -147,8 +151,10 @@ def main() -> int:
     print(f"\n{df.attrs['label']} — weather source: {args.source} "
           f"(lead {df.attrs['lead_days']}d)")
     print(f"  train {len(train)} ({train.index[0].date()}→{train.index[-1].date()})  "
-          f"val {len(val)}  test {len(test)} "
+          f"val {len(val)} [{args.val_split}]  test {len(test)} "
           f"({test.index[0].date()}→{test.index[-1].date()})")
+    print(f"  mean y: train={train.y.mean():.0f} val={val.y.mean():.0f} "
+          f"test={test.y.mean():.0f} MW  (val should resemble train)")
     print(f"  scoring on {len(test_rows)} test rows"
           f"{' (daylight only)' if daylight_only else ''}\n")
 
@@ -195,7 +201,7 @@ def main() -> int:
     print(f"Best overall: {best}.")
 
     out = args.out or (f"reports/leaderboard_{args.slice}_{args.source}"
-                       f"_lead{df.attrs['lead_days']}.json")
+                       f"_lead{df.attrs['lead_days']}_{args.val_split}.json")
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(json.dumps({
         "slice": args.slice, "label": df.attrs["label"], "source": args.source,
@@ -203,6 +209,7 @@ def main() -> int:
         "daylight_only": bool(daylight_only),
         "window": {"start": str(df.index[0]), "end": str(df.index[-1])},
         "n_train": len(train), "n_val": len(val), "n_test_scored": len(test_rows),
+        "val_split": args.val_split,
         "mean_generation_mw": float(y.mean()),
         "levels": levels.tolist(),
         "economic_note": "imbalance_cost_proxy uses a proxy spread, not published "
