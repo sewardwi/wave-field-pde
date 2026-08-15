@@ -158,6 +158,56 @@ class ConformalRecalibrator(QuantileForecaster):
         return np.sort(out, axis=1)
 
 
+class CapacityNormalized(QuantileForecaster):
+    """Fit any forecaster on capacity factor instead of absolute MW.
+
+    Necessary wherever the fleet is growing. Gradient-boosted trees predict by
+    averaging training targets in a leaf, so they can never output a value above
+    the largest target they saw. With Spanish solar adding 64% of capacity across
+    the study window, 6.7% of test hours sit above the entire training range —
+    an absolute-MW model is structurally incapable of reaching them, no matter
+    how good its weather inputs are.
+
+    Dividing the target (and every capacity-scaled feature) by the leakage-safe
+    `capacity_gate` proxy makes the learning problem stationary; predictions are
+    multiplied back into MW so scoring stays in physical units.
+    """
+
+    # Features that scale with fleet size and so must be normalised alongside y.
+    SCALED = ("y_at_gate", "y_mean24_gate", "y_std24_gate", "y_sameh_d2",
+              "tso_forecast")
+
+    def __init__(self, base: QuantileForecaster, cap_col: str = "capacity_gate",
+                 name: str | None = None):
+        self.base = base
+        self.cap_col = cap_col
+        self.name = name or f"{base.name}_cf"
+
+    def _norm(self, df: pd.DataFrame) -> pd.DataFrame:
+        cap = df[self.cap_col].to_numpy(dtype=float)
+        cap = np.where(np.isfinite(cap) & (cap > 0), cap, np.nan)
+        out = df.copy()
+        for c in ("y",) + self.SCALED:
+            if c in out.columns:
+                out[c] = out[c].to_numpy(dtype=float) / cap
+        return out
+
+    def fit(self, train: pd.DataFrame) -> "CapacityNormalized":
+        self.base.fit(self._norm(train).dropna(subset=["y"]))
+        return self
+
+    def fit_with_val(self, train: pd.DataFrame, val: pd.DataFrame) -> "CapacityNormalized":
+        self.base.fit(self._norm(train).dropna(subset=["y"]),
+                      val=self._norm(val).dropna(subset=["y"]))
+        return self
+
+    def predict_quantiles(self, df: pd.DataFrame,
+                          levels: np.ndarray = DEFAULT_LEVELS) -> np.ndarray:
+        q = self.base.predict_quantiles(self._norm(df), levels)
+        cap = df[self.cap_col].to_numpy(dtype=float)[:, None]
+        return np.sort(q * cap, axis=1)
+
+
 class PointBaseline(QuantileForecaster):
     """A point forecast + the residual wrapper. Subclasses supply `point()`."""
 

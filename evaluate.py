@@ -37,7 +37,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from baselines.base import DEFAULT_LEVELS, ConformalRecalibrator
+from baselines.base import (DEFAULT_LEVELS, CapacityNormalized,
+                            ConformalRecalibrator)
 from baselines.climatology import Climatology
 from baselines.gbm_quantile import GBMQuantile
 from baselines.persistence import Persistence
@@ -109,6 +110,15 @@ def build_models(train: pd.DataFrame, val: pd.DataFrame, df: pd.DataFrame,
     gbm2 = GBMQuantile(features=feats + ["tso_forecast"], levels=levels)
     gbm2.fit(train, val=val)
     fitted["gbm_plus_tso"] = gbm2
+
+    # Capacity-factor variants: essential where the fleet is growing, since a
+    # tree cannot predict above its largest training target.
+    for src, cols in (("gbm_quantile", feats),
+                      ("gbm_plus_tso", feats + ["tso_forecast"])):
+        print(f"  fitting {src}_cf (capacity-factor target)…", flush=True)
+        fitted[f"{src}_cf"] = CapacityNormalized(
+            GBMQuantile(features=cols, levels=levels), name=f"{src}_cf"
+        ).fit_with_val(train, val)
 
     # Recalibrated variants. The GBMs are under-dispersed out of sample, which
     # costs them CRPS even where their median is more accurate than the TSO's.
@@ -184,10 +194,15 @@ def main() -> int:
               f"{r['calibration_error']:6.3f}{star}")
 
     best = order[0]
-    gbm_skill = max(results["gbm_quantile"]["crps_skill_vs_tso"],
-                    results["gbm_quantile_cal"]["crps_skill_vs_tso"])
-    plus_skill = max(results["gbm_plus_tso"]["crps_skill_vs_tso"],
-                     results["gbm_plus_tso_cal"]["crps_skill_vs_tso"])
+    def best_of(prefix):
+        """Best CRPS skill across a family's variants (_cal, _cf, ...)."""
+        fam = {k: v for k, v in results.items()
+               if k == prefix or k.startswith(prefix + "_")}
+        win = max(fam, key=lambda k: fam[k]["crps_skill_vs_tso"])
+        return win, fam[win]["crps_skill_vs_tso"]
+
+    gbm_name, gbm_skill = best_of("gbm_quantile")
+    plus_name, plus_skill = best_of("gbm_plus_tso")
     print(f"\nmean generation on scored rows: {y.mean():.0f} MW")
     print(f"CRPS is in MW; 'skill' is 1 - CRPS/CRPS_tso (positive = better than the TSO).")
     print(f"coverage_80 should be ≈80%; calib is RMS deviation of coverage from nominal.")
@@ -195,9 +210,9 @@ def main() -> int:
     def verdict(s):
         return "BEATS" if s > 0 else "does NOT beat"
     print(f"\nFAIL-FAST (replace the TSO, public weather only): "
-          f"gbm_quantile {verdict(gbm_skill)} it on CRPS ({gbm_skill:+.1%}).")
+          f"{gbm_name} {verdict(gbm_skill)} it on CRPS ({gbm_skill:+.1%}).")
     print(f"FAIL-FAST (post-process the TSO): "
-          f"gbm_plus_tso {verdict(plus_skill)} it on CRPS ({plus_skill:+.1%}).")
+          f"{plus_name} {verdict(plus_skill)} it on CRPS ({plus_skill:+.1%}).")
     print(f"Best overall: {best}.")
 
     out = args.out or (f"reports/leaderboard_{args.slice}_{args.source}"

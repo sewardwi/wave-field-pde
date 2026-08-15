@@ -102,10 +102,22 @@ def forecast_origin_features(y: pd.Series, gate_hour: int = 12) -> pd.DataFrame:
         out[ok] = vals[pos[ok]]
         return out
 
+    # Installed-capacity proxy: the largest output actually observed in the
+    # trailing 60 days, frozen at the cutoff like everything else here.
+    #
+    # This exists because fleets grow. Spanish solar added 64% of capacity over
+    # 2024-03..2026-08 (monthly peak 17.9 -> 29.3 GW), which puts 6.7% of test
+    # hours above anything in the training range — and a tree model cannot
+    # predict above the largest target it was trained on, so absolute-MW models
+    # break down structurally rather than merely losing accuracy. Dividing by
+    # this proxy turns the target into a capacity factor, which is stationary.
+    roll_peak = ys.rolling("60D", min_periods=48).max()
+
     daily = pd.DataFrame({
         "y_at_gate": at_cutoff(ys),
         "y_mean24_gate": at_cutoff(roll_mean),
         "y_std24_gate": at_cutoff(roll_std),
+        "capacity_gate": at_cutoff(roll_peak),
     }, index=days)
 
     out = daily.reindex(y.index.floor("D"))
