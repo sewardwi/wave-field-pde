@@ -1,4 +1,4 @@
-# Wave Field PDE
+# [WIP] Wave Field PDE
 
 > **Direction (2026-07-24).** This repo forked from [`wave-field-diffusion`](https://github.com/sewardwi/wave-field-diffusion) to a new goal: applying the wave-equation / FFT-convolution diffusion operator to **scientific-field generation — PDE surrogates, fluid dynamics, weather/climate**, where the FFT operator's FNO kinship and long-context efficiency actually fit. New agents/contributors: start with [CLAUDE.md](CLAUDE.md) (the "CURRENT DIRECTION" section) and [docs/agent-memory/project_pde_pivot.md](docs/agent-memory/project_pde_pivot.md). The rest of this README documents the prior image/audio work, retained as lineage and infrastructure reference.
 
